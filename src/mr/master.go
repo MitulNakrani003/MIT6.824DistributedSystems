@@ -127,9 +127,9 @@ func (m *Master) Done() bool {
 //
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{
-        files:      files,
-        nReduce:    nReduce,
-        mapTasks:   make([]Task, len(files)),
+        files: files,
+        nReduce: nReduce,
+        mapTasks: make([]Task, len(files)),
         reduceTasks: make([]Task, nReduce),
     }
     for i := range m.mapTasks {

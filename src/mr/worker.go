@@ -8,55 +8,55 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
 )
 
-//
 // Map functions return a slice of KeyValue.
-//
 type KeyValue struct {
 	Key   string
 	Value string
 }
 
-//
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-//
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
-//
 // main/mrworker.go calls this function.
-//
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
 	// Your worker implementation here.
 
 	for {
-        args := TaskRequestArgs{}
-        reply := TaskRequestReply{}
-        
-        if !call("Master.GetTask", &args, &reply) {
-            break
-        }
+		args := TaskRequestArgs{}
+		reply := TaskRequestReply{}
+
+		if !call("Master.GetTask", &args, &reply) {
+			break
+		}
 
 		switch reply.TaskType {
-        case MapTask:
-            performMapTask(mapf, reply.Filename, reply.TaskID, reply.NReduce)
-            // reportTaskCompletion
-        case ReduceTask:
-            // performReduceTask
-            // reportTaskCompletion
-        case WaitTask:
-            time.Sleep(1 * time.Second)
-        case ExitTask:
-            return
-        }
+		case MapTask:
+			performMapTask(mapf, reply.Filename, reply.TaskID, reply.NReduce)
+			// reportTaskCompletion
+		case ReduceTask:
+			performReduceTask(reducef, reply.TaskID)
+			// reportTaskCompletion
+		case WaitTask:
+			time.Sleep(1 * time.Second)
+		case ExitTask:
+			return
+		}
 	}
 }
 
@@ -73,32 +73,74 @@ func performMapTask(mapf func(string, string) []KeyValue, filename string, mapID
 
 	kva := mapf(filename, string(content))
 
-	// Partition results by reduce bucket
-    partitions := make([][]KeyValue, nReduce)
-    for _, kv := range kva {
-        p := ihash(kv.Key) % nReduce
-        partitions[p] = append(partitions[p], kv)
-    }
+	partitions := make([][]KeyValue, nReduce)
+	for _, kv := range kva {
+		p := ihash(kv.Key) % nReduce
+		partitions[p] = append(partitions[p], kv)
+	}
 
 	// Write partitions to temp files
-    for i := 0; i < nReduce; i++ {
-        tempFile, _ := ioutil.TempFile("", "mr-tmp-*")
-        // JSON encode results
-        enc := json.NewEncoder(tempFile)
-        for _, kv := range partitions[i] {
-            enc.Encode(&kv)
-        }
-        tempFile.Close()
-        outFile := fmt.Sprintf("mr-%d-%d", mapID, i)
-        os.Rename(tempFile.Name(), outFile)
-    }
+	for i := 0; i < nReduce; i++ {
+		tempFile, _ := ioutil.TempFile("", "mr-tmp-*")
+
+		enc := json.NewEncoder(tempFile)
+		for _, kv := range partitions[i] {
+			enc.Encode(&kv)
+		}
+		tempFile.Close()
+		outFile := fmt.Sprintf("mr-%d-%d", mapID, i)
+		os.Rename(tempFile.Name(), outFile)
+	}
 }
 
-//
+func performReduceTask(reducef func(string, []string) string, reduceID int) {
+	var kvarr []KeyValue
+	// read all the files based on the reduceID and combine them into kvarr
+	files, _ := os.ReadDir(".")
+	for _, file := range files {
+		var mapID int
+		var fileReduceID int
+		n, err := fmt.Sscanf(file.Name(), "mr-%d-%d", &mapID, &fileReduceID)
+		if err == nil && n == 2 && fileReduceID == reduceID {
+			thisfile, _ := os.Open(file.Name())
+			dec := json.NewDecoder(thisfile)
+			for {
+				var kv KeyValue
+				if err := dec.Decode(&kv); err != nil {
+					break
+				}
+				kvarr = append(kvarr, kv)
+			}
+			thisfile.Close()
+		}
+	}
+
+	sort.Sort(ByKey(kvarr))
+	tempFile, _ := ioutil.TempFile("", "mr-out-tmp-*")
+
+	i := 0
+    for i < len(kvarr) {
+        j := i + 1
+        for j < len(kvarr) && kvarr[j].Key == kvarr[i].Key {
+            j++
+        }
+        values := []string{}
+        for k := i; k < j; k++ {
+            values = append(values, kvarr[k].Value)
+        }
+        output := reducef(kvarr[i].Key, values)
+        fmt.Fprintf(tempFile, "%v %v\n", kvarr[i].Key, output)
+        i = j
+    }
+    
+    tempFile.Close()
+    outFile := fmt.Sprintf("mr-out-%d", reduceID)
+    os.Rename(tempFile.Name(), outFile)
+}
+
 // example function to show how to make an RPC call to the master.
 //
 // the RPC argument and reply types are defined in rpc.go.
-//
 func CallExample() {
 
 	// declare an argument structure.
@@ -117,11 +159,9 @@ func CallExample() {
 	fmt.Printf("reply.Y %v\n", reply.Y)
 }
 
-//
 // send an RPC request to the master, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-//
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := masterSock()
