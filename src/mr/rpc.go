@@ -37,7 +37,7 @@ type TaskRequestArgs struct {
 
 type TaskRequestReply struct {
     TaskType   TaskType
-    TaskID     int
+    MapID     int
     Filename   string   // For map tasks
     NReduce    int      // For map tasks
     ReduceID   int      // For reduce tasks

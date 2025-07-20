@@ -27,10 +27,8 @@ type Master struct {
     reduceTasks []Task
     files      []string
     nReduce    int
-    done       bool
 }
 
-// Your code here -- RPC handlers for the worker to call.
 func (m *Master) GetTask(args *TaskRequestArgs, reply *TaskRequestReply) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -43,7 +41,7 @@ func (m *Master) GetTask(args *TaskRequestArgs, reply *TaskRequestReply) error {
             m.mapTasks[i].StartTime = time.Now()
             
             reply.TaskType = MapTask
-            reply.TaskID = i
+            reply.MapID = i
             reply.Filename = m.files[i]
             reply.NReduce = m.nReduce
 
@@ -51,12 +49,16 @@ func (m *Master) GetTask(args *TaskRequestArgs, reply *TaskRequestReply) error {
         }
     }
 
-	//If maps not done, tell worker to wait
+    allMapsDone := true
     for _, task := range m.mapTasks {
         if task.Status != Completed {
-            reply.TaskType = WaitTask
-            return nil
+            allMapsDone = false
+            break
         }
+    }
+    if !allMapsDone {
+        reply.TaskType = WaitTask
+        return nil
     }
     
     // Assign reduce tasks
@@ -66,7 +68,6 @@ func (m *Master) GetTask(args *TaskRequestArgs, reply *TaskRequestReply) error {
             m.reduceTasks[i].StartTime = time.Now()
 
             reply.TaskType = ReduceTask
-            reply.TaskID = i
             reply.ReduceID = i
 
             return nil
@@ -75,10 +76,26 @@ func (m *Master) GetTask(args *TaskRequestArgs, reply *TaskRequestReply) error {
     
     // All tasks completed
     reply.TaskType = ExitTask
-    m.done = true
     return nil
-
 }
+
+func (m *Master) ReportTask(args *TaskReportArgs, reply *TaskReportReply) error {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+
+    switch args.TaskType {
+    case MapTask:
+        if args.Success && args.TaskID < len(m.mapTasks) {
+            m.mapTasks[args.TaskID].Status = Completed
+        }
+    case ReduceTask:
+        if args.Success && args.TaskID < len(m.reduceTasks) {
+            m.reduceTasks[args.TaskID].Status = Completed
+        }
+    }
+    return nil
+}
+
 
 //
 // an example RPC handler.

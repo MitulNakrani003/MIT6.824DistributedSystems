@@ -34,24 +34,21 @@ func ihash(key string) int {
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-
-	// Your worker implementation here.
-
 	for {
 		args := TaskRequestArgs{}
 		reply := TaskRequestReply{}
-
-		if !call("Master.GetTask", &args, &reply) {
-			break
+		ok := call("Master.GetTask", &args, &reply)
+		if !ok {
+			return
 		}
 
 		switch reply.TaskType {
 		case MapTask:
-			performMapTask(mapf, reply.Filename, reply.TaskID, reply.NReduce)
-			// reportTaskCompletion
+			performMapTask(mapf, reply.Filename, reply.MapID, reply.NReduce)
+			reportTaskCompletion(MapTask, reply.MapID, true)
 		case ReduceTask:
-			performReduceTask(reducef, reply.TaskID)
-			// reportTaskCompletion
+			performReduceTask(reducef, reply.ReduceID)
+			reportTaskCompletion(ReduceTask, reply.ReduceID, true)
 		case WaitTask:
 			time.Sleep(1 * time.Second)
 		case ExitTask:
@@ -95,7 +92,7 @@ func performMapTask(mapf func(string, string) []KeyValue, filename string, mapID
 
 func performReduceTask(reducef func(string, []string) string, reduceID int) {
 	var kvarr []KeyValue
-	// read all the files based on the reduceID and combine them into kvarr
+	
 	files, _ := os.ReadDir(".")
 	for _, file := range files {
 		var mapID int
@@ -119,23 +116,34 @@ func performReduceTask(reducef func(string, []string) string, reduceID int) {
 	tempFile, _ := ioutil.TempFile("", "mr-out-tmp-*")
 
 	i := 0
-    for i < len(kvarr) {
-        j := i + 1
-        for j < len(kvarr) && kvarr[j].Key == kvarr[i].Key {
-            j++
-        }
-        values := []string{}
-        for k := i; k < j; k++ {
-            values = append(values, kvarr[k].Value)
-        }
-        output := reducef(kvarr[i].Key, values)
-        fmt.Fprintf(tempFile, "%v %v\n", kvarr[i].Key, output)
-        i = j
-    }
-    
-    tempFile.Close()
-    outFile := fmt.Sprintf("mr-out-%d", reduceID)
-    os.Rename(tempFile.Name(), outFile)
+	for i < len(kvarr) {
+		j := i + 1
+		for j < len(kvarr) && kvarr[j].Key == kvarr[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kvarr[k].Value)
+		}
+		output := reducef(kvarr[i].Key, values)
+		fmt.Fprintf(tempFile, "%v %v\n", kvarr[i].Key, output)
+		i = j
+	}
+
+	tempFile.Close()
+	outFile := fmt.Sprintf("mr-out-%d", reduceID)
+	os.Rename(tempFile.Name(), outFile)
+}
+
+// worker.go
+func reportTaskCompletion(taskType TaskType, taskId int, success bool) {
+	args := TaskReportArgs{
+		TaskType: taskType,
+		TaskID: taskId,
+		Success: success,
+	}
+	reply := TaskReportReply{}
+	call("Master.ReportTask", &args, &reply)
 }
 
 // example function to show how to make an RPC call to the master.
