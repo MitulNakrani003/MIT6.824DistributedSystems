@@ -61,7 +61,6 @@ func (m *Master) GetTask(args *TaskRequestArgs, reply *TaskRequestReply) error {
         return nil
     }
     
-    // Assign reduce tasks
     for i, task := range m.reduceTasks {
         if task.Status == Idle {
             m.reduceTasks[i].Status = InProgress
@@ -74,7 +73,6 @@ func (m *Master) GetTask(args *TaskRequestArgs, reply *TaskRequestReply) error {
         }
     }
     
-    // All tasks completed
     reply.TaskType = ExitTask
     return nil
 }
@@ -129,12 +127,21 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
-
-	// Your code here.
-
-
-	return ret
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    
+    for _, task := range m.mapTasks {
+        if task.Status != Completed {
+            return false
+        }
+    }
+    
+    for _, task := range m.reduceTasks {
+        if task.Status != Completed {
+            return false
+        }
+    }
+    return true
 }
 
 //
