@@ -94,6 +94,29 @@ func (m *Master) ReportTask(args *TaskReportArgs, reply *TaskReportReply) error 
     return nil
 }
 
+func (m *Master) checkTimeouts() {
+    for !m.Done() {
+        time.Sleep(500 * time.Millisecond)
+        m.mu.Lock()
+        
+        // Check map timeouts
+        for i, task := range m.mapTasks {
+            if task.Status == InProgress && time.Since(task.StartTime) > 10*time.Second {
+                m.mapTasks[i].Status = Idle
+            }
+        }
+        
+        // Check reduce timeouts
+        for i, task := range m.reduceTasks {
+            if task.Status == InProgress && time.Since(task.StartTime) > 10*time.Second {
+                m.reduceTasks[i].Status = Idle
+            }
+        }
+        
+        m.mu.Unlock()
+    }
+}
+
 
 //
 // an example RPC handler.
@@ -164,6 +187,6 @@ func MakeMaster(files []string, nReduce int) *Master {
     }
 
     m.server()
-
+    go m.checkTimeouts()
     return &m
 }
