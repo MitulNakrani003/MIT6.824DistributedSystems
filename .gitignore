@@ -1,3 +1,7 @@
 pkg/
 api.key
 *-handin.tar.gz
+mr-*
+mrmaster
+mrsequential
+mrworker
