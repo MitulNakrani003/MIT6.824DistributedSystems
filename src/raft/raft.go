@@ -431,10 +431,11 @@ func (rf *Raft) ticker() {
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
+
+	DPrintf("[%d] S%d T%d: Received RequestVote from %d at T%d", rf.me, rf.state, rf.currentTerm, args.CandidateId, args.Term)
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -456,7 +457,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if canVote && isLogUpToDate {
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
-		// rf.persist()
 		rf.electionTimer.Reset(randomizedElectionTimeout())
 	} else {
 		reply.VoteGranted = false
@@ -598,6 +598,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	rf.log = append(rf.log, newEntry)
+
+	rf.persist()
 
 	index = len(rf.log) - 1
 	term = rf.currentTerm
