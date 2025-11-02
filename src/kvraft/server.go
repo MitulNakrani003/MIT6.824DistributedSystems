@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -168,22 +169,35 @@ func (kv *KVServer) applier() {
 
 			lastRequestId, ok := kv.ackedRequests[op.ClientId]
 			if !ok || op.RequestId > lastRequestId { // If this is a new request or a higher request ID
-				switch op.Operation {
-				case "Put":
+				switch op.Operation { // Only PUT and APPEND here to make seperation in concerns for database access
+				case "Put": // Additional GET condition here can create a bottleneck of the applier function just to read DB and can make raft slow 
 					kv.database[op.Key] = op.Value
 				case "Append":
 					kv.database[op.Key] += op.Value
 				}
 				kv.ackedRequests[op.ClientId] = op.RequestId
 			}
-			ch, ok := kv.resultCh[msg.CommandIndex]
+			if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() > kv.maxraftstate {
+				kv.takeSnapshot(msg.CommandIndex)
+			}
 
+			ch, ok := kv.resultCh[msg.CommandIndex]
 			kv.mu.Unlock()
 			if ok {
 				ch <- op
 			}
 		}
 	}
+}
+
+func (kv *KVServer) takeSnapshot(lastAppliedIndextoDB int) {
+	// Take a snapshot of the current state
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.database)
+	e.Encode(kv.ackedRequests)
+	data := w.Bytes()
+	kv.rf.SaveSnapshot(lastAppliedIndextoDB, data)
 }
 
 // servers[] contains the ports of the set of

@@ -80,6 +80,9 @@ type Raft struct {
 	matchIndex       []int         // for each server, index of highest log entry known to be replicated on server
 	applyCh          chan ApplyMsg // channel to send ApplyMsg to service (or tester)
 	applyCond        *sync.Cond    // Used to signal the applier goroutine
+
+	lastIncludedIndex int // index of the last entry included in the snapshot
+	lastIncludedTerm  int // term of the last entry included in the snapshot
 }
 
 type RequestVoteArgs struct {
@@ -284,16 +287,14 @@ func (rf *Raft) replicateLogToPeer(server int) {
 		return
 	}
 
-	prevLogIndex := rf.nextIndex[server] - 1
+	// Building the Append Entries Arguments
+	prevLogIndex := rf.nextIndex[server] - 1 // Index of peer's log entry immediately preceding new ones
 	if prevLogIndex < 0 {
 		prevLogIndex = 0
 	}
-
-	prevLogTerm := rf.log[prevLogIndex].Term
-
+	prevLogTerm := rf.log[prevLogIndex].Term // Term of peer's prevLogIndex entry
 	entries := make([]LogEntry, len(rf.log[prevLogIndex+1:]))
 	copy(entries, rf.log[prevLogIndex+1:])
-
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
@@ -417,6 +418,43 @@ func (rf *Raft) ticker() {
 		rf.electionTimer.Reset(randomizedElectionTimeout())
 		rf.mu.Unlock()
 	}
+}
+
+func (rf *Raft) GetRaftStateSize() int {
+	return rf.persister.RaftStateSize()
+}
+
+func (rf *Raft) GetLastApplied() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.lastAppliedIndex
+}
+
+func (rf *Raft) SaveSnapshot(index int, snapshot []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if index <= rf.lastIncludedIndex {
+		return
+	}
+
+	// Trim the log entries up to the snapshot index. This considers the first index is always a dummy entry.
+	previousLastIncludedIndex := rf.lastIncludedIndex
+	rf.lastIncludedTerm = rf.log[index-previousLastIncludedIndex].Term
+	rf.lastIncludedIndex = index
+	rf.log = rf.log[index-previousLastIncludedIndex:]
+
+	// Persist the new, smaller log and the snapshot metadata.
+	// Also save the snapshot data itself.
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
+	raftState := w.Bytes()
+	rf.persister.SaveStateAndSnapshot(raftState, snapshot)
 }
 
 //=====================================================================================================================================
