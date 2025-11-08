@@ -170,34 +170,67 @@ func (kv *KVServer) applier() {
 			lastRequestId, ok := kv.ackedRequests[op.ClientId]
 			if !ok || op.RequestId > lastRequestId { // If this is a new request or a higher request ID
 				switch op.Operation { // Only PUT and APPEND here to make seperation in concerns for database access
-				case "Put": // Additional GET condition here can create a bottleneck of the applier function just to read DB and can make raft slow 
+				case "Put": // Additional GET condition here can create a bottleneck of the applier function just to read DB and can make raft slow
 					kv.database[op.Key] = op.Value
 				case "Append":
 					kv.database[op.Key] += op.Value
 				}
 				kv.ackedRequests[op.ClientId] = op.RequestId
 			}
-			if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() > kv.maxraftstate {
-				kv.takeSnapshot(msg.CommandIndex)
-			}
 
 			ch, ok := kv.resultCh[msg.CommandIndex]
 			kv.mu.Unlock()
+
 			if ok {
 				ch <- op
+			}
+		} else if msg.SnapshotValid {
+			if kv.rf.PermissionToInstallSnapshot(msg.SnapshotTerm, msg.SnapshotIndex, msg.Snapshot) {
+				kv.mu.Lock()
+				kv.applySnapshot(msg.Snapshot)
+				kv.mu.Unlock()
 			}
 		}
 	}
 }
 
-func (kv *KVServer) takeSnapshot(lastAppliedIndextoDB int) {
-	// Take a snapshot of the current state
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(kv.database)
-	e.Encode(kv.ackedRequests)
-	data := w.Bytes()
-	kv.rf.SaveSnapshot(lastAppliedIndextoDB, data)
+func (kv *KVServer) applySnapshot(snapshot []byte) {
+	if len(snapshot) < 1 {
+		return
+	}
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	var db map[string]string
+	var ack map[int64]int64
+	if d.Decode(&db) != nil || d.Decode(&ack) != nil {
+		log.Fatalf("KVServer failed to decode snapshot")
+	} else {
+		kv.database = db
+		kv.ackedRequests = ack
+	}
+}
+
+// A dedicated goroutine to periodically check if a snapshot is needed.
+func (kv *KVServer) snapshotter() {
+	if kv.maxraftstate == -1 {
+		return
+	}
+	for !kv.killed() {
+		time.Sleep(10 * time.Millisecond)
+
+		if kv.rf.GetRaftStateSize() >= kv.maxraftstate {
+			kv.mu.Lock()
+			w := new(bytes.Buffer)
+			e := labgob.NewEncoder(w)
+			e.Encode(kv.database)
+			e.Encode(kv.ackedRequests)
+			snapshotData := w.Bytes()
+			lastAppliedIndextoDB := kv.rf.GetLastApplied()
+			kv.mu.Unlock()
+
+			kv.rf.SaveSnapshot(lastAppliedIndextoDB, snapshotData)
+		}
+	}
 }
 
 // servers[] contains the ports of the set of
@@ -228,5 +261,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	go kv.applier()
+	go kv.snapshotter()
 	return kv
 }
