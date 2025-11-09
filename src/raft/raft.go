@@ -29,6 +29,11 @@ import (
 import "bytes"
 import "../labgob"
 
+//=====================================================================================================================================
+// STRUCT DEFINITIONS
+//=====================================================================================================================================
+//=====================================================================================================================================
+
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -135,6 +140,7 @@ type InstallSnapshotReply struct {
 }
 
 //=====================================================================================================================================
+// GETTERS
 //=====================================================================================================================================
 
 // return currentTerm and whether this server
@@ -149,6 +155,20 @@ func (rf *Raft) GetState() (int, bool) {
 	isleader = (rf.state == Leader)
 	return term, isleader
 }
+
+func (rf *Raft) GetRaftStateSize() int {
+	return rf.persister.RaftStateSize()
+}
+
+func (rf *Raft) GetLastApplied() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.lastAppliedIndex
+}
+
+//=====================================================================================================================================
+// RAFT PERSISTENCE METHODS
+//=====================================================================================================================================
 
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
@@ -192,6 +212,10 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.lastIncludedTerm = lastIncludedTerm
 	}
 }
+
+//=====================================================================================================================================
+// RAFT HELPER METHODS
+//=====================================================================================================================================
 
 // startElection is called to start a new election.
 func (rf *Raft) startElection() {
@@ -281,11 +305,6 @@ func randomizedElectionTimeout() time.Duration {
 	return time.Duration(300+rand.Intn(300)) * time.Millisecond
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
-}
-
 // Must be called with lock held.
 func (rf *Raft) updateCommitIndex() {
 	lastLogIndex := len(rf.log) - 1
@@ -305,6 +324,7 @@ func (rf *Raft) updateCommitIndex() {
 		}
 	}
 }
+
 
 func (rf *Raft) replicateLogToPeer(server int) {
 	rf.mu.Lock()
@@ -409,6 +429,44 @@ func (rf *Raft) heartbeatLoop() {
 	}
 }
 
+//=====================================================================================================================================
+// SNAPSHOT METHODS
+//=====================================================================================================================================
+
+func (rf *Raft) SaveSnapshot(index int, snapshot []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if index <= rf.lastIncludedIndex {
+		return
+	}
+
+	// Trim the log entries up to the snapshot index. This considers the first index is always a dummy entry.
+	rf.lastIncludedTerm = rf.log[index-rf.lastIncludedIndex].Term
+
+	newLog := make([]LogEntry, 1)
+	newLog = append(newLog, rf.log[index+1-rf.lastIncludedIndex:]...)
+	rf.log = newLog
+
+	rf.lastIncludedIndex = index
+
+	// Persist the new, smaller log and the snapshot metadata.
+	// Also save the snapshot data itself.
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
+	raftState := w.Bytes()
+	rf.persister.SaveStateAndSnapshot(raftState, snapshot)
+}
+
+//=====================================================================================================================================
+// ROUTINES 
+//=====================================================================================================================================
+
 // Goroutine that applies committed log entries to the state machine.
 func (rf *Raft) applier() {
 	rf.mu.Lock()
@@ -446,56 +504,17 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) GetRaftStateSize() int {
-	return rf.persister.RaftStateSize()
-}
-
-func (rf *Raft) GetLastApplied() int {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return rf.lastAppliedIndex
-}
-
-func (rf *Raft) SaveSnapshot(index int, snapshot []byte) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if index <= rf.lastIncludedIndex {
-		return
-	}
-
-	// Trim the log entries up to the snapshot index. This considers the first index is always a dummy entry.
-	rf.lastIncludedTerm = rf.log[index-rf.lastIncludedIndex].Term
-
-	newLog := make([]LogEntry, 1)
-	newLog = append(newLog, rf.log[index+1-rf.lastIncludedIndex:]...)
-	rf.log = newLog
-
-	rf.lastIncludedIndex = index
-
-	// Persist the new, smaller log and the snapshot metadata.
-	// Also save the snapshot data itself.
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
-	e.Encode(rf.lastIncludedIndex)
-	e.Encode(rf.lastIncludedTerm)
-	raftState := w.Bytes()
-	rf.persister.SaveStateAndSnapshot(raftState, snapshot)
-}
-
 //=====================================================================================================================================
+// RPC HANDLERS
 //=====================================================================================================================================
 
 // example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) RequestVoteRPC(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
-	DPrintf("[%d] S%d T%d: Received RequestVote from %d at T%d", rf.me, rf.state, rf.currentTerm, args.CandidateId, args.Term)
+	DPrintf("[%d] S%d T%d: Received RequestVoteRPC from %d at T%d", rf.me, rf.state, rf.currentTerm, args.CandidateId, args.Term)
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -524,7 +543,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 }
 
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) AppendEntriesRPC(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
@@ -590,6 +609,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 }
 
+//=====================================================================================================================================
+// RPC SENDERS
+//=====================================================================================================================================
+
+
 // sendRequestVote is already provided, but you call it like this.
 // It's a wrapper around rf.peers[server].Call("Raft.RequestVote", args, reply)
 // example code to send a RequestVote RPC to a server.
@@ -620,9 +644,37 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	ok := rf.peers[server].Call("Raft.RequestVoteRPC", args, reply)
 	return ok
 }
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntriesRPC", args, reply)
+	return ok
+}
+
+// the tester doesn't halt goroutines created by Raft after each test,
+// but it does call the Kill() method. your code can use killed() to
+// check whether Kill() has been called. the use of atomic avoids the
+// need for a lock.
+//
+// the issue is that long-running goroutines use memory and may chew
+// up CPU time, perhaps causing later tests to fail and generating
+// confusing debug output. any goroutine with a long-running loop
+// should call killed() to check whether it should stop.
+func (rf *Raft) Kill() {
+	atomic.StoreInt32(&rf.dead, 1)
+	rf.applyCond.Broadcast() // Wake up applier to exit
+}
+
+func (rf *Raft) killed() bool {
+	z := atomic.LoadInt32(&rf.dead)
+	return z == 1
+}
+
+//=====================================================================================================================================
+// RAFT CONSTRUCT
+//=====================================================================================================================================
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -664,25 +716,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.broadcastAppendEntries()
 
 	return index, term, isLeader
-}
-
-// the tester doesn't halt goroutines created by Raft after each test,
-// but it does call the Kill() method. your code can use killed() to
-// check whether Kill() has been called. the use of atomic avoids the
-// need for a lock.
-//
-// the issue is that long-running goroutines use memory and may chew
-// up CPU time, perhaps causing later tests to fail and generating
-// confusing debug output. any goroutine with a long-running loop
-// should call killed() to check whether it should stop.
-func (rf *Raft) Kill() {
-	atomic.StoreInt32(&rf.dead, 1)
-	rf.applyCond.Broadcast() // Wake up applier to exit
-}
-
-func (rf *Raft) killed() bool {
-	z := atomic.LoadInt32(&rf.dead)
-	return z == 1
 }
 
 // the service or tester wants to create a Raft server. the ports
