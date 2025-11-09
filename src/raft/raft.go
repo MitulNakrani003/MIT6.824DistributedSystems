@@ -39,22 +39,16 @@ import "../labgob"
 // snapshots) on the applyCh; at that point you can add fields to
 // ApplyMsg, but set CommandValid to false for these other uses.
 type ApplyMsg struct {
-	CommandValid bool        // true if Command contains a newly committed log entry
-	Command      interface{} // the command to apply to the state machine
-	CommandIndex int         // the index of the command in the log
-
-	//SnapShot
-	SnapshotValid bool   // true if Snapshot contains a newly created snapshot
-	Snapshot      []byte // the snapshot to be installed
-	SnapshotIndex int    // the index up to which the snapshot is valid
-	SnapshotTerm  int    // the term of the last included entry in the snapshot
+	CommandValid bool
+	Command      interface{}
+	CommandIndex int
 }
 
 // LogEntry contains a command for the state machine, and the term when the
 // entry was received by the leader.
 type LogEntry struct {
-	Command interface{} // command for state machine
-	Term    int         // term when entry was received by leader
+	Command interface{}
+	Term    int
 }
 
 type State int
@@ -87,8 +81,8 @@ type Raft struct {
 	applyCh          chan ApplyMsg // channel to send ApplyMsg to service (or tester)
 	applyCond        *sync.Cond    // Used to signal the applier goroutine
 
-	lastIncludedIndex int // in Snapshot // index of the last entry included in the snapshot
-	lastIncludedTerm  int // in Snapshot // term of the last entry included in the snapshot
+	lastIncludedIndex int // index of the last entry included in the snapshot
+	lastIncludedTerm  int // term of the last entry included in the snapshot
 }
 
 type RequestVoteArgs struct {
@@ -122,18 +116,6 @@ type AppendEntriesReply struct {
 	ConflictTerm  int  // term of the conflicting entry
 }
 
-type InstallSnapshotArgs struct {
-	Term              int    // leader's term
-	LeaderId          int    // so follower can redirect clients
-	LastIncludedIndex int    // the snapshot replaces all entries up through and including this index
-	LastIncludedTerm  int    // term of lastIncludedIndex
-	Data              []byte // raw bytes of the snapshot chunk
-}
-
-type InstallSnapshotReply struct {
-	Term int // currentTerm, for leader to update itself
-}
-
 //=====================================================================================================================================
 //=====================================================================================================================================
 
@@ -159,8 +141,6 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
-	e.Encode(rf.lastIncludedIndex)
-	e.Encode(rf.lastIncludedTerm)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -175,21 +155,15 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var log []LogEntry
-	var lastIncludedIndex int
-	var lastIncludedTerm int
 
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
-		d.Decode(&log) != nil ||
-		d.Decode(&lastIncludedIndex) != nil ||
-		d.Decode(&lastIncludedTerm) != nil {
+		d.Decode(&log) != nil {
 		DPrintf("[%d]: Error decoding persisted state", rf.me)
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
-		rf.lastIncludedIndex = lastIncludedIndex
-		rf.lastIncludedTerm = lastIncludedTerm
 	}
 }
 
@@ -514,13 +488,10 @@ func (rf *Raft) SaveSnapshot(index int, snapshot []byte) {
 	}
 
 	// Trim the log entries up to the snapshot index. This considers the first index is always a dummy entry.
-	rf.lastIncludedTerm = rf.log[index-rf.lastIncludedIndex].Term
-
-	newLog := make([]LogEntry, 1)
-	newLog = append(newLog, rf.log[index+1-rf.lastIncludedIndex:]...)
-	rf.log = newLog
-
+	previousLastIncludedIndex := rf.lastIncludedIndex
+	rf.lastIncludedTerm = rf.log[index-previousLastIncludedIndex].Term
 	rf.lastIncludedIndex = index
+	rf.log = rf.log[index-previousLastIncludedIndex:]
 
 	// Persist the new, smaller log and the snapshot metadata.
 	// Also save the snapshot data itself.
