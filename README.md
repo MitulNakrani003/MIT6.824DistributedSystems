@@ -77,17 +77,6 @@ Each lab progressively deepens understanding of building **fault-tolerant, paral
 * Understood the critical importance of **idempotency** in distributed systems
 * Gained experience with **state machine replication** and **deterministic execution**
 
-### 📊 Performance Metrics
-* Passed all Lab 3A tests (15 tests) including:
-  * Linearizability checks under various failure scenarios
-  * Network partitions and healing
-  * Server restarts and unreliable networks
-* Passed all Lab 3B tests (8 tests) including:
-  * InstallSnapshot RPC functionality
-  * Reasonable snapshot sizes
-  * Recovery from snapshots after restarts
-* Typical test completion: ~400 seconds real time, ~700 seconds CPU time
-
 ---
 
 ## 🛠️ Tech Stack
